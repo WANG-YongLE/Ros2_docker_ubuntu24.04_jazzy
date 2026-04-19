@@ -1,0 +1,16 @@
+services:
+  testtt:
+    build: .
+    container_name: testtt
+
+    ports:
+      - "10000:10000"
+
+    volumes:
+      - ./workspace/src:/workspace/src
+      - ./rebuild_colcon.rc:/root/rebuild_colcon.rc
+
+    stdin_open: true
+    tty: true
+
+    command: bash -i
