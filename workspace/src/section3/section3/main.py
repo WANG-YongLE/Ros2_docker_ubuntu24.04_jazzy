@@ -14,11 +14,15 @@ import math
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import os
+
 class State(Node):
     def __init__(self):
         super().__init__('state')
 
-        model_path = "/workspace/src/model.pkl"
+        # 模型路径 (请根据实际位置修改)
+        knn_x_path = "/workspace/src/knn_model_x.pkl"
+        knn_z_path = "/workspace/src/knn_model_z.pkl"
+        
         self.x_boundary_min = -0.1494
         self.x_boundary_max =  0.1494
         self.z_boundary_min = -0.1182
@@ -26,7 +30,11 @@ class State(Node):
         self.ball_radius = 0.02   
         self.bottom_board_y = 0.042
         self.top_board_y = 0.312
-        self.model = joblib.load(model_path)
+        
+        # 加载两个 KNN 模型
+        self.knn_x = joblib.load(knn_x_path)
+        self.knn_z = joblib.load(knn_z_path)
+        
         self.mode = None
         self.ball_p = [0.0, 0.0, 0.0]
         self.ball_v = [0.0, 0.0, 0.0]
@@ -40,7 +48,7 @@ class State(Node):
         self.ai_control_timer = None  
         self.exit_requested = False
 
-
+        # 订阅
         self.create_subscription(Float32, '/ball_vx', self.vx_cb, 10)
         self.create_subscription(Float32, '/ball_vy', self.vy_cb, 10)
         self.create_subscription(Float32, '/ball_vz', self.vz_cb, 10)
@@ -52,6 +60,7 @@ class State(Node):
         self.create_subscription(Float32, '/up_min', self.s5_cb, 10)
         self.create_subscription(Float32, '/up_minus', self.s6_cb, 10)
 
+        # 发布器
         self.goal_pubs = {
             'goal_s1': self.create_publisher(Float32, '/goal_s1', 10),
             'goal_s2': self.create_publisher(Float32, '/goal_s2', 10),
@@ -80,7 +89,6 @@ class State(Node):
         self.mode = mode
         self.get_logger().info(f"模式: {mode.upper()}")
 
-     
         if self.ai_control_timer is not None:
             self.ai_control_timer.cancel()
             self.ai_control_timer = None
@@ -99,8 +107,7 @@ class State(Node):
         elif mode == 'ai':
             if self.debug_timer is None:
                 self.debug_timer = self.create_timer(1.0, self.debug_print)
-                
-   
+            # 二值化速度以计算方向类别
             for i in range(3):
                 if self.ball_v[i] > 0:
                     self.ball_v[i] = 1.0
@@ -113,22 +120,45 @@ class State(Node):
                 self.debug_timer = self.create_timer(1.0, self.debug_print)
             self.ai_control_timer = self.create_timer(0.001, self.update_math_control)
 
+    # ------------------- AI 模式（KNN 预测 x、z，y 由速度符号决定）---------------------
     def update_ai_control(self):
-        goal = self.predict_landing_position(
+        goal = self.predict_landing_position_knn(
             self.ball_p[0], self.ball_p[1], self.ball_p[2],
             self.ball_v[0], self.ball_v[1], self.ball_v[2]
         )
         self.goal_ball = goal
         self.auto_go_to_goal()
 
-    def predict_landing_position(self, posX, posY, posZ, velX, velY, velZ):
+    def predict_landing_position_knn(self, posX, posY, posZ, velX, velY, velZ):
+        """
+        使用两个 KNN 模型分别预测 x 和 z 落地坐标，
+        y 坐标根据速度 vy 的符号决定：
+            vy > 0 -> top_board_y
+            vy < 0 -> bottom_board_y
+        """
+        # 二值化速度符号
         def binarize(v):
             return 1 if v > 0 else -1
         vx, vy, vz = map(binarize, [velX, velY, velZ])
         dir_class = self.encode_direction(vx, vy, vz)
+        
+        # 构建输入特征 [px, py, pz, dir_class]
         input_array = np.array([[posX, posY, posZ, dir_class]])
-        prediction = self.model.predict(input_array)
-        return (prediction[0,0], prediction[0,1], prediction[0,2])
+        
+        # 预测 x 和 z
+        pred_x = self.knn_x.predict(input_array)[0]
+        pred_z = self.knn_z.predict(input_array)[0]
+        
+        # y 坐标由速度方向决定
+        if velY > 0:
+            pred_y = self.top_board_y
+        elif velY < 0:
+            pred_y = self.bottom_board_y
+        else:
+            # 如果 vy == 0（理论上不会发生），保持当前位置的 y
+            pred_y = posY
+        
+        return (pred_x, pred_y, pred_z)
 
     def encode_direction(self, vx, vy, vz):
         if vx == 1 and vy == 1 and vz == 1: return 1
@@ -141,15 +171,14 @@ class State(Node):
         elif vx == -1 and vy == -1 and vz == -1: return 8
         else: return 0
 
-
+    # ------------------- 数学模式（物理反射）保持不变 -------------------
     def update_math_control(self):
-
         if self.ball_v[1] > 0:
             target_y = self.top_board_y
         elif self.ball_v[1] < 0:
             target_y = self.bottom_board_y
         else:
-            return  
+            return
 
         result = self.predict_landing_with_walls_and_radius(
             self.ball_p[0], self.ball_p[1], self.ball_p[2],
@@ -172,7 +201,6 @@ class State(Node):
                                               x_boundary_min, x_boundary_max,
                                               z_boundary_min, z_boundary_max,
                                               ball_radius=0.02):
-      
         if abs(velY) < 1e-6:
             return (None, None, None)
         t = (target_y - posY) / velY
@@ -190,11 +218,9 @@ class State(Node):
                 return p + v * dt
             p_abs = p + v * dt
             offset = p_abs - low
-      
             if offset >= 0:
                 cycles = int(offset / span)
             else:
-           
                 cycles = -int((-offset) / span) - 1 if (offset % span) != 0 else -int((-offset) / span)
             remainder = offset - cycles * span
             if cycles % 2 == 0:
@@ -206,6 +232,7 @@ class State(Node):
         landZ = reflect_1d(posZ, velZ, z_min_eff, z_max_eff, t)
         return (landX, target_y, landZ)
 
+    # ------------------- 手动模式键盘控制 -------------------
     def start_keyboard_listener(self):
         if self.keyboard_thread and self.keyboard_thread.is_alive():
             return
@@ -256,10 +283,10 @@ class State(Node):
         if self.keyboard_thread:
             self.keyboard_thread.join(timeout=1.0)
 
+    # ------------------- 辅助函数 -------------------
     def debug_print(self):
         if self.mode == 'manual':
             return
-       
         self.get_logger().info(
             f"input: px={self.ball_p[0]:.5f}, py={self.ball_p[1]:.5f}, pz={self.ball_p[2]:.5f}, "
             f"vx={self.ball_v[0]:.5f}, vy={self.ball_v[1]:.5f}, vz={self.ball_v[2]:.5f}"
