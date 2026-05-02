@@ -22,7 +22,8 @@ class State(Node):
         # 模型路径 (请根据实际位置修改)
         knn_x_path = "/workspace/src/knn_model_x.pkl"
         knn_z_path = "/workspace/src/knn_model_z.pkl"
-        
+        knn_xz_model_path="/workspace/src/knn_model.pkl"
+        knn_scaler="/workspace/src/scaler.pkl"
         self.x_boundary_min = -0.1494
         self.x_boundary_max =  0.1494
         self.z_boundary_min = -0.1182
@@ -34,7 +35,8 @@ class State(Node):
         # 加载两个 KNN 模型
         self.knn_x = joblib.load(knn_x_path)
         self.knn_z = joblib.load(knn_z_path)
-        
+        self.knn_xz=joblib.load(knn_xz_model_path)
+        self.scaler = joblib.load("scaler.pkl")
         self.mode = None
         self.ball_p = [0.0, 0.0, 0.0]
         self.ball_v = [0.0, 0.0, 0.0]
@@ -130,24 +132,11 @@ class State(Node):
         self.auto_go_to_goal()
 
     def predict_landing_position_knn(self, posX, posY, posZ, velX, velY, velZ):
-        """
-        使用两个 KNN 模型分别预测 x 和 z 落地坐标，
-        y 坐标根据速度 vy 的符号决定：
-            vy > 0 -> top_board_y
-            vy < 0 -> bottom_board_y
-        """
-        # 二值化速度符号
-        def binarize(v):
-            return 1 if v > 0 else -1
-        vx, vy, vz = map(binarize, [velX, velY, velZ])
-        dir_class = self.encode_direction(vx, vy, vz)
-        
-        # 构建输入特征 [px, py, pz, dir_class]
-        input_array = np.array([[posX, posY, posZ, dir_class]])
-        
+        input_array = np.array([[posX, posY, posZ, velX, velY, velZ]])
+        input_scaled = self.scaler.transform(input_array)
         # 预测 x 和 z
-        pred_x = self.knn_x.predict(input_array)[0]
-        pred_z = self.knn_z.predict(input_array)[0]
+        pred = self.knn_xz.predict(input_scaled)[0]
+        pred_x, pred_z = pred[0], pred[1]
         
         # y 坐标由速度方向决定
         if velY > 0:
@@ -301,8 +290,8 @@ class State(Node):
 
     def auto_go_to_goal(self):
         x, y, z = self.goal_ball
-        goal_1 = z
-        goal_2 = -z
+        goal_1 =-z
+        goal_2 =z
         if y > 0.15:
             if x > 0.06:
                 self.goal_s4 = goal_1
