@@ -37,9 +37,9 @@ X_test_scaled = scaler.transform(X_test)
 # 4. 建立並訓練 RandomForest 回歸器 (多輸出)
 # ============================================
 model = RandomForestRegressor(
-    n_estimators=50,
-    max_depth=20,
-    min_samples_leaf=10,
+    n_estimators=100,
+    max_depth=30,
+    min_samples_leaf=5,
     n_jobs=-1,
     random_state=42
 )
