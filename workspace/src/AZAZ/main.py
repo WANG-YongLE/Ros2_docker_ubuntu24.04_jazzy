@@ -20,7 +20,10 @@ class State(Node):
         super().__init__('state')
 
         # 模型路径 (请根据实际位置修改)
-        knn_xz_model_path = "/workspace/src/knn_model.pkl"
+        knn_x_path = "/workspace/src/knn_model_x.pkl"
+        knn_z_path = "/workspace/src/knn_model_z.pkl"
+        knn_xz_model_path="/workspace/src/knn_model.pkl"
+        knn_scaler="/workspace/src/scaler.pkl"
         self.x_boundary_min = -0.1494
         self.x_boundary_max =  0.1494
         self.z_boundary_min = -0.1182
@@ -29,8 +32,10 @@ class State(Node):
         self.bottom_board_y = 0.042
         self.top_board_y = 0.312
         
-        # 加载模型
-        self.knn_xz = joblib.load(knn_xz_model_path)
+        # 加载两个 KNN 模型
+        self.knn_x = joblib.load(knn_x_path)
+        self.knn_z = joblib.load(knn_z_path)
+        self.knn_xz=joblib.load(knn_xz_model_path)
         self.scaler = joblib.load("scaler.pkl")
         self.mode = None
         self.ball_p = [0.0, 0.0, 0.0]
@@ -104,7 +109,12 @@ class State(Node):
         elif mode == 'ai':
             if self.debug_timer is None:
                 self.debug_timer = self.create_timer(1.0, self.debug_print)
-            # 速度會在預測時轉成單位方向向量 + 速度大小
+            # 二值化速度以计算方向类别
+            for i in range(3):
+                if self.ball_v[i] > 0:
+                    self.ball_v[i] = 1.0
+                elif self.ball_v[i] < 0:
+                    self.ball_v[i] = -1.0
             self.ai_control_timer = self.create_timer(0.001, self.update_ai_control)
 
         elif mode == 'math':
@@ -125,17 +135,7 @@ class State(Node):
         self.auto_go_to_goal()
 
     def predict_landing_position_knn(self, posX, posY, posZ, velX, velY, velZ):
-        v_norm = math.sqrt(velX**2 + velY**2 + velZ**2)
-        if v_norm > 1e-6:
-            dirX = velX / v_norm
-            dirY = velY / v_norm
-            dirZ = velZ / v_norm
-            speed = v_norm
-        else:
-            dirX = dirY = dirZ = 0.0
-            speed = 0.0
-
-        input_array = np.array([[posX, posY, posZ, dirX, dirY, dirZ, speed]])
+        input_array = np.array([[posX, posY, posZ, velX, velY, velZ]])
         input_scaled = self.scaler.transform(input_array)
         # 预测 x 和 z
         pred = self.knn_xz.predict(input_scaled)[0]
